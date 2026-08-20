@@ -126,8 +126,8 @@
   <div id="mirrorWrap">
     <video id="cam" autoplay playsinline muted></video>
     <video id="camBlur" autoplay playsinline muted></video>
-    <canvas id="overlay"></canvas>
   </div>
+  <canvas id="overlay"></canvas>
 
   <div class="hint" id="hint">화면을 탭하면 컨트롤이 나타나요</div>
 
@@ -304,7 +304,8 @@ function videoToCanvasCoords(vx, vy) {
   const scale = Math.max(cw / vw, ch / vh);
   const dw = vw * scale, dh = vh * scale;
   const ox = (cw - dw) / 2, oy = (ch - dh) / 2;
-  return { x: vx * scale + ox, y: vy * scale + oy };
+  const x = vx * scale + ox;
+  return { x: mirrored ? cw - x : x, y: vy * scale + oy };
 }
 
 function updateTracking(detections, now) {
