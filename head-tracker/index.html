@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+<title>KT디인재 프로젝트 발표 · 실시간 헤드 트래킹</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@500;700;900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #05060a;
+    overflow: hidden;
+    font-family: 'Noto Sans KR', system-ui, sans-serif;
+    -webkit-user-select: none; user-select: none;
+    touch-action: manipulation;
+  }
+
+  #stage {
+    position: fixed; inset: 0;
+    background: #000;
+    overflow: hidden;
+  }
+
+  #mirrorWrap {
+    position: absolute; inset: 0;
+    transform: scaleX(1);
+    transition: transform .15s ease;
+  }
+  #mirrorWrap.mirrored { transform: scaleX(-1); }
+
+  video#cam {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  canvas#overlay {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+  }
+
+  /* start / permission overlay */
+  #startScreen {
+    position: absolute; inset: 0; z-index: 20;
+    display: flex; align-items: center; justify-content: center;
+    background:
+      radial-gradient(ellipse 520px 340px at 50% 38%, rgba(255,45,110,.3), rgba(255,45,110,0) 70%),
+      radial-gradient(circle at 50% 40%, #14171f, #05060a 70%);
+    color: #fff; text-align: center; padding: 24px;
+  }
+  #startScreen .panel { display: flex; flex-direction: column; align-items: center; gap: 18px; max-width: 420px; }
+  #startScreen h1 { font-size: 20px; margin: 0; font-weight: 900; line-height: 1.4; }
+  #startScreen p { margin: 0; font-size: 13px; opacity: .7; line-height: 1.6; font-weight: 500; }
+  #startBtn {
+    appearance: none; border: none; cursor: pointer;
+    background: #fff; color: #05060a;
+    font-family: inherit; font-weight: 900; font-size: 15px;
+    padding: 14px 32px; border-radius: 999px;
+    box-shadow: 0 8px 24px rgba(255,255,255,.15);
+  }
+  #startBtn:active { transform: scale(.97); }
+  #errBox { display: none; color: #ff8a8a; font-size: 12.5px; font-weight: 700; max-width: 380px; line-height: 1.6; }
+
+  /* controls */
+  #controls {
+    position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%);
+    z-index: 15;
+    display: flex; gap: 10px; align-items: center;
+    padding: 8px; border-radius: 999px;
+    background: rgba(10,12,18,.55);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    border: 1px solid rgba(255,255,255,.08);
+    opacity: 0; transition: opacity .3s ease;
+  }
+  #controls.visible { opacity: 1; }
+
+  .ctrlBtn {
+    appearance: none; border: none; cursor: pointer;
+    width: 42px; height: 42px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(255,255,255,.08);
+    color: #fff;
+    font-size: 18px;
+  }
+  .ctrlBtn.active { background: #fff; color: #05060a; }
+  .ctrlBtn:active { transform: scale(.92); }
+
+  #faceCount {
+    color: #fff; font-size: 11px; font-weight: 700;
+    padding: 0 10px; opacity: .65; min-width: 54px; text-align: center;
+  }
+
+  .hint {
+    position: absolute; bottom: 78px; left: 50%; transform: translateX(-50%);
+    z-index: 15; color: #fff; font-size: 11px; font-weight: 500; opacity: 0;
+    background: rgba(10,12,18,.5); padding: 6px 12px; border-radius: 999px;
+    transition: opacity .3s ease; pointer-events: none; white-space: nowrap;
+  }
+  .hint.visible { opacity: .7; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div id="mirrorWrap">
+    <video id="cam" autoplay playsinline muted></video>
+    <canvas id="overlay"></canvas>
+  </div>
+
+  <div class="hint" id="hint">화면을 탭하면 컨트롤이 나타나요</div>
+
+  <div id="controls">
+    <button class="ctrlBtn" id="btnSwitchCam" title="카메라 전환">⟳</button>
+    <button class="ctrlBtn" id="btnMirror" title="좌우 반전">⇋</button>
+    <button class="ctrlBtn" id="btnFullscreen" title="전체화면">⛶</button>
+    <span id="faceCount">0명</span>
+  </div>
+
+  <div id="startScreen">
+    <div class="panel">
+      <h1>KT디인재 모여라!</h1>
+      <p>카메라를 켜고, 화면 앞으로 지나가보세요.<br>함께 영상을 남겨도 좋아요!</p>
+      <button id="startBtn">카메라 시작하기</button>
+      <div id="errBox"></div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { FaceDetector, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17";
+
+const PHRASES = [
+  "AI로 세상을 바꿔요", "오늘도 코딩 중", "데이터가 말해줘요", "모델 학습 중", "밤새운 알고리즘",
+  "협업의 힘", "장학생의 자부심", "코드 한 줄의 설렘", "함께라서 가능했다", "디지털 인재의 시작",
+  "프로젝트 완성까지", "버그와의 사투", "AI 프로젝트 진행 중", "오늘의 성장 기록", "새로운 도전 중",
+  "미래를 코딩하다", "팀워크가 답이다", "아이디어가 현실로", "장학생 파이팅", "밤샘 개발의 결과",
+  "질문은 언제나 환영", "결과보다 과정", "성장하는 우리", "KT와 함께 성장", "배움에는 끝이 없다",
+  "코드는 나의 무기", "오늘의 발표자", "긴장 반 설렘 반", "다음 목표는 취업", "실력으로 증명",
+  "함께 만든 서비스", "AI 시대의 주인공", "코딩으로 꿈꾸다", "디버깅 완료", "완성도 높은 결과물",
+  "팀 프로젝트의 결실", "성장의 증거", "오늘만 기다렸다", "청춘의 도전", "실전 감각 만렙",
+  "노력은 배신하지 않는다", "협업 그 자체", "오늘도 한 걸음 성장", "발표자료 최종본", "KT디인재의 자부심",
+  "AI 모델 튜닝 중", "무대 뒤 심장소리", "오늘의 주인공", "다음 프로젝트 구상 중", "오늘의 MVP"
+];
+
+const video = document.getElementById('cam');
+const canvas = document.getElementById('overlay');
+const ctx = canvas.getContext('2d');
+const mirrorWrap = document.getElementById('mirrorWrap');
+const stage = document.getElementById('stage');
+const startScreen = document.getElementById('startScreen');
+const startBtn = document.getElementById('startBtn');
+const errBox = document.getElementById('errBox');
+const controls = document.getElementById('controls');
+const hint = document.getElementById('hint');
+const btnSwitchCam = document.getElementById('btnSwitchCam');
+const btnMirror = document.getElementById('btnMirror');
+const btnFullscreen = document.getElementById('btnFullscreen');
+const faceCountEl = document.getElementById('faceCount');
+
+let faceDetector = null;
+let usingGPU = true;
+let devices = [];
+let deviceIndex = 0;
+let currentStream = null;
+let mirrored = false;
+let tracked = [];
+let nextId = 1;
+let phraseBag = [];
+let lastDetections = [];
+let frameCount = 0;
+let detectEveryN = 1;
+let running = false;
+
+function shuffledPhrases() {
+  const arr = [...PHRASES];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+function nextPhrase() {
+  if (phraseBag.length === 0) phraseBag = shuffledPhrases();
+  return phraseBag.pop();
+}
+
+async function initDetector() {
+  const vision = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17/wasm"
+  );
+  const base = {
+    modelAssetPath:
+      "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
+  };
+  try {
+    faceDetector = await FaceDetector.createFromOptions(vision, {
+      baseOptions: { ...base, delegate: "GPU" },
+      runningMode: "VIDEO",
+      minDetectionConfidence: 0.5,
+    });
+    usingGPU = true;
+  } catch (e) {
+    faceDetector = await FaceDetector.createFromOptions(vision, {
+      baseOptions: { ...base, delegate: "CPU" },
+      runningMode: "VIDEO",
+      minDetectionConfidence: 0.5,
+    });
+    usingGPU = false;
+    detectEveryN = 2;
+  }
+}
+
+async function listDevices() {
+  const all = await navigator.mediaDevices.enumerateDevices();
+  devices = all.filter(d => d.kind === 'videoinput');
+}
+
+async function startCamera(preferFacing) {
+  if (currentStream) {
+    currentStream.getTracks().forEach(t => t.stop());
+  }
+  let constraints;
+  if (devices.length && devices[deviceIndex]) {
+    constraints = { video: { deviceId: { exact: devices[deviceIndex].deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false };
+  } else {
+    constraints = { video: { facingMode: preferFacing || 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false };
+  }
+  const stream = await navigator.mediaDevices.getUserMedia(constraints);
+  currentStream = stream;
+  video.srcObject = stream;
+  await new Promise(res => { video.onloadedmetadata = () => res(); });
+  await video.play();
+
+  const track = stream.getVideoTracks()[0];
+  const settings = track.getSettings ? track.getSettings() : {};
+  mirrored = settings.facingMode === 'user';
+  applyMirror();
+
+  if (!devices.length) await listDevices();
+}
+
+function applyMirror() {
+  mirrorWrap.classList.toggle('mirrored', mirrored);
+}
+
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = stage.clientWidth, h = stage.clientHeight;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function videoToCanvasCoords(vx, vy) {
+  const cw = stage.clientWidth, ch = stage.clientHeight;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || !vh) return { x: vx, y: vy };
+  const scale = Math.max(cw / vw, ch / vh);
+  const dw = vw * scale, dh = vh * scale;
+  const ox = (cw - dw) / 2, oy = (ch - dh) / 2;
+  return { x: vx * scale + ox, y: vy * scale + oy };
+}
+
+function updateTracking(detections, now) {
+  const used = new Set();
+  for (const det of detections) {
+    const box = det.boundingBox;
+    if (!box) continue;
+    const cx = box.originX + box.width / 2;
+    const cy = box.originY + box.height / 2;
+    let best = null, bestDist = Infinity;
+    for (const t of tracked) {
+      if (used.has(t.id)) continue;
+      const d = Math.hypot(t.rawCx - cx, t.rawCy - cy);
+      if (d < bestDist) { bestDist = d; best = t; }
+    }
+    const threshold = Math.max(box.width, box.height) * 1.3;
+    if (best && bestDist < threshold) {
+      best.rawCx = cx; best.rawCy = cy; best.rawTop = box.originY; best.rawW = box.width; best.rawH = box.height;
+      best.lastSeen = now;
+      used.add(best.id);
+    } else {
+      const placements = ['head', 'shoulder', 'cheek'];
+      const placement = placements[Math.floor(Math.random() * placements.length)];
+      const t = {
+        id: nextId++,
+        rawCx: cx, rawCy: cy, rawTop: box.originY, rawW: box.width, rawH: box.height,
+        smoothCx: cx, smoothTop: box.originY, smoothW: box.width, smoothH: box.height,
+        phrase: nextPhrase(),
+        placement,
+        cheekSide: Math.random() < 0.5 ? -1 : 1,
+        lastSeen: now,
+      };
+      tracked.push(t);
+      used.add(t.id);
+    }
+  }
+  tracked = tracked.filter(t => now - t.lastSeen < 700);
+}
+
+function drawLabel(x, y, w, text) {
+  const fontSize = Math.max(13, Math.min(24, w * 0.18));
+  ctx.font = `900 ${fontSize}px 'Noto Sans KR', system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,.65)';
+  ctx.shadowBlur = 7;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 1;
+  ctx.fillStyle = '#fff';
+  ctx.fillText(text, x, y);
+  ctx.restore();
+}
+
+function renderFrame(now) {
+  ctx.clearRect(0, 0, stage.clientWidth, stage.clientHeight);
+  const smoothing = 0.3;
+  for (const t of tracked) {
+    t.smoothCx += (t.rawCx - t.smoothCx) * smoothing;
+    t.smoothTop += (t.rawTop - t.smoothTop) * smoothing;
+    t.smoothW += (t.rawW - t.smoothW) * smoothing;
+    t.smoothH += (t.rawH - t.smoothH) * smoothing;
+
+    let vx = t.smoothCx, vy;
+    if (t.placement === 'shoulder') {
+      vy = t.smoothTop + t.smoothH * 1.85;
+    } else if (t.placement === 'cheek') {
+      vx = t.smoothCx + t.cheekSide * t.smoothW * 0.68;
+      vy = t.smoothTop + t.smoothH * 0.62;
+    } else {
+      vy = t.smoothTop - t.smoothH * 0.45;
+    }
+
+    const origin = videoToCanvasCoords(t.smoothCx, t.smoothTop);
+    const pos = videoToCanvasCoords(vx, vy);
+    const posW = videoToCanvasCoords(t.smoothCx + t.smoothW, t.smoothTop).x - origin.x;
+    drawLabel(pos.x, pos.y, Math.abs(posW), t.phrase);
+  }
+  faceCountEl.textContent = `${tracked.length}명`;
+}
+
+function loop() {
+  if (!running) return;
+  const now = performance.now();
+  if (video.readyState >= 2) {
+    frameCount++;
+    if (faceDetector && frameCount % detectEveryN === 0) {
+      const result = faceDetector.detectForVideo(video, now);
+      lastDetections = result.detections || [];
+      updateTracking(lastDetections, now);
+    }
+  }
+  renderFrame(now);
+  requestAnimationFrame(loop);
+}
+
+function showError(msg) {
+  errBox.textContent = msg;
+  errBox.style.display = 'block';
+}
+
+async function boot() {
+  try {
+    startBtn.disabled = true;
+    startBtn.textContent = '준비 중...';
+    await initDetector();
+    await startCamera('environment');
+    resizeCanvas();
+    startScreen.style.display = 'none';
+    running = true;
+    requestAnimationFrame(loop);
+    showControlsBriefly();
+  } catch (e) {
+    console.error(e);
+    startBtn.disabled = false;
+    startBtn.textContent = '카메라 시작하기';
+    if (e && e.name === 'NotAllowedError') {
+      showError('카메라 권한이 거부되었습니다. 브라우저 설정에서 카메라 접근을 허용한 뒤 다시 시도해주세요.');
+    } else if (e && e.name === 'NotFoundError') {
+      showError('사용 가능한 카메라를 찾지 못했습니다.');
+    } else {
+      showError('카메라를 시작하지 못했습니다: ' + (e && e.message ? e.message : e));
+    }
+  }
+}
+
+function showControlsBriefly() {
+  controls.classList.add('visible');
+  hint.classList.add('visible');
+  clearTimeout(showControlsBriefly._t);
+  showControlsBriefly._t = setTimeout(() => {
+    controls.classList.remove('visible');
+    hint.classList.remove('visible');
+  }, 3500);
+}
+
+stage.addEventListener('click', (e) => {
+  if (startScreen.style.display !== 'none') return;
+  showControlsBriefly();
+});
+
+startBtn.addEventListener('click', boot);
+
+btnSwitchCam.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  if (!devices.length) await listDevices();
+  if (devices.length < 2) {
+    showControlsBriefly();
+    return;
+  }
+  deviceIndex = (deviceIndex + 1) % devices.length;
+  await startCamera();
+  showControlsBriefly();
+});
+
+btnMirror.addEventListener('click', (e) => {
+  e.stopPropagation();
+  mirrored = !mirrored;
+  applyMirror();
+  btnMirror.classList.toggle('active', mirrored);
+  showControlsBriefly();
+});
+
+btnFullscreen.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (!document.fullscreenElement) {
+    stage.requestFullscreen?.().catch(() => {});
+    btnFullscreen.classList.add('active');
+  } else {
+    document.exitFullscreen?.();
+    btnFullscreen.classList.remove('active');
+  }
+  showControlsBriefly();
+});
+
+window.addEventListener('resize', resizeCanvas);
+</script>
+</body>
+</html>
