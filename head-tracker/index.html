@@ -490,6 +490,13 @@ btnFullscreen.addEventListener('click', (e) => {
 });
 
 window.addEventListener('resize', resizeCanvas);
+window.addEventListener('orientationchange', () => {
+  // some mobile browsers settle the new viewport size a beat after the
+  // event fires, so re-check shortly after too
+  resizeCanvas();
+  setTimeout(resizeCanvas, 150);
+  setTimeout(resizeCanvas, 500);
+});
 </script>
 </body>
 </html>
