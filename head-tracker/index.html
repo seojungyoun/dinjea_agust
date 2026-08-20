@@ -34,6 +34,12 @@
   }
   #mirrorWrap.mirrored { transform: scaleX(-1); }
 
+  #rotateLayer {
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%) rotate(0deg);
+    transition: transform .2s ease, width .2s ease, height .2s ease;
+  }
+
   video#cam {
     position: absolute; inset: 0;
     width: 100%; height: 100%;
@@ -124,8 +130,10 @@
 
 <div id="stage">
   <div id="mirrorWrap">
-    <video id="cam" autoplay playsinline muted></video>
-    <video id="camBlur" autoplay playsinline muted></video>
+    <div id="rotateLayer">
+      <video id="cam" autoplay playsinline muted></video>
+      <video id="camBlur" autoplay playsinline muted></video>
+    </div>
   </div>
   <canvas id="overlay"></canvas>
 
@@ -134,6 +142,7 @@
   <div id="controls">
     <button class="ctrlBtn" id="btnSwitchCam" title="카메라 전환">⟳</button>
     <button class="ctrlBtn" id="btnMirror" title="좌우 반전">⇋</button>
+    <button class="ctrlBtn" id="btnRotate" title="화면 회전">⤾</button>
     <button class="ctrlBtn" id="btnBeauty" title="카메라 보정">✨</button>
     <button class="ctrlBtn" id="btnFullscreen" title="전체화면">⛶</button>
     <span id="faceCount">0명</span>
@@ -170,6 +179,7 @@ const videoBlur = document.getElementById('camBlur');
 const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
 const mirrorWrap = document.getElementById('mirrorWrap');
+const rotateLayer = document.getElementById('rotateLayer');
 const stage = document.getElementById('stage');
 const startScreen = document.getElementById('startScreen');
 const startBtn = document.getElementById('startBtn');
@@ -178,6 +188,7 @@ const controls = document.getElementById('controls');
 const hint = document.getElementById('hint');
 const btnSwitchCam = document.getElementById('btnSwitchCam');
 const btnMirror = document.getElementById('btnMirror');
+const btnRotate = document.getElementById('btnRotate');
 const btnBeauty = document.getElementById('btnBeauty');
 const btnFullscreen = document.getElementById('btnFullscreen');
 const faceCountEl = document.getElementById('faceCount');
@@ -196,6 +207,9 @@ let deviceIndex = 0;
 let currentStream = null;
 let mirrored = false;
 let beautyOn = true;
+let rotation = 0; // 0, 90, 180, 270 — corrects devices/browsers that
+                  // deliver the raw camera buffer sideways
+let rotationManuallySet = false;
 let tracked = [];
 let nextId = 1;
 let phraseBag = [];
@@ -272,11 +286,26 @@ async function startCamera(preferFacing) {
   applyMirror();
   applyBeauty();
 
+  if (!rotationManuallySet) {
+    const videoLandscape = video.videoWidth > video.videoHeight;
+    const containerLandscape = stage.clientWidth > stage.clientHeight;
+    rotation = videoLandscape !== containerLandscape ? 90 : 0;
+  }
+  applyRotationLayout();
+
   if (!devices.length) await listDevices();
 }
 
 function applyMirror() {
   mirrorWrap.classList.toggle('mirrored', mirrored);
+}
+
+function applyRotationLayout() {
+  const cw = stage.clientWidth, ch = stage.clientHeight;
+  const swapped = rotation === 90 || rotation === 270;
+  rotateLayer.style.width = (swapped ? ch : cw) + 'px';
+  rotateLayer.style.height = (swapped ? cw : ch) + 'px';
+  rotateLayer.style.transform = `translate(-50%, -50%) rotate(${rotation}deg)`;
 }
 
 function applyBeauty() {
@@ -295,17 +324,40 @@ function resizeCanvas() {
   canvas.style.width = w + 'px';
   canvas.style.height = h + 'px';
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  applyRotationLayout();
 }
 
 function videoToCanvasCoords(vx, vy) {
   const cw = stage.clientWidth, ch = stage.clientHeight;
   const vw = video.videoWidth, vh = video.videoHeight;
   if (!vw || !vh) return { x: vx, y: vy };
-  const scale = Math.max(cw / vw, ch / vh);
+
+  // the video renders inside #rotateLayer, whose box is swapped
+  // (width/height) and CSS-rotated to correct devices that hand back
+  // a sideways camera buffer — mirror the same math here so labels
+  // land on the rotated, on-screen position of each head
+  const swapped = rotation === 90 || rotation === 270;
+  const bw = swapped ? ch : cw;
+  const bh = swapped ? cw : ch;
+
+  const scale = Math.max(bw / vw, bh / vh);
   const dw = vw * scale, dh = vh * scale;
-  const ox = (cw - dw) / 2, oy = (ch - dh) / 2;
-  const x = vx * scale + ox;
-  return { x: mirrored ? cw - x : x, y: vy * scale + oy };
+  const ox = (bw - dw) / 2, oy = (bh - dh) / 2;
+
+  const lx = vx * scale + ox - bw / 2;
+  const ly = vy * scale + oy - bh / 2;
+
+  let rx, ry;
+  switch (rotation) {
+    case 90:  rx = -ly; ry = lx;  break;
+    case 180: rx = -lx; ry = -ly; break;
+    case 270: rx = ly;  ry = -lx; break;
+    default:  rx = lx;  ry = ly;  break;
+  }
+
+  const x = cw / 2 + rx;
+  const y = ch / 2 + ry;
+  return { x: mirrored ? cw - x : x, y };
 }
 
 function updateTracking(detections, now) {
@@ -382,8 +434,9 @@ function renderFrame(now) {
 
     const origin = videoToCanvasCoords(t.smoothCx, t.smoothTop);
     const pos = videoToCanvasCoords(vx, vy);
-    const posW = videoToCanvasCoords(t.smoothCx + t.smoothW, t.smoothTop).x - origin.x;
-    drawLabel(pos.x, pos.y, Math.abs(posW), t.phrase);
+    const edge = videoToCanvasCoords(t.smoothCx + t.smoothW, t.smoothTop);
+    const faceScreenWidth = Math.hypot(edge.x - origin.x, edge.y - origin.y);
+    drawLabel(pos.x, pos.y, faceScreenWidth, t.phrase);
   }
   faceCountEl.textContent = `${tracked.length}명`;
 }
@@ -474,6 +527,14 @@ btnBeauty.addEventListener('click', (e) => {
   e.stopPropagation();
   beautyOn = !beautyOn;
   applyBeauty();
+  showControlsBriefly();
+});
+
+btnRotate.addEventListener('click', (e) => {
+  e.stopPropagation();
+  rotation = (rotation + 90) % 360;
+  rotationManuallySet = true;
+  applyRotationLayout();
   showControlsBriefly();
 });
 
