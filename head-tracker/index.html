@@ -490,13 +490,31 @@ btnFullscreen.addEventListener('click', (e) => {
 });
 
 window.addEventListener('resize', resizeCanvas);
-window.addEventListener('orientationchange', () => {
-  // some mobile browsers settle the new viewport size a beat after the
-  // event fires, so re-check shortly after too
+
+let orientationRestartTimer = null;
+function handleOrientationChange() {
   resizeCanvas();
-  setTimeout(resizeCanvas, 150);
-  setTimeout(resizeCanvas, 500);
-});
+  // many mobile browsers keep serving camera frames oriented for
+  // whatever the device orientation was when getUserMedia was called,
+  // and never re-orient the stream on a later physical rotation. The
+  // reliable fix is to re-open the camera so it re-reads the current
+  // orientation into the fresh stream.
+  clearTimeout(orientationRestartTimer);
+  orientationRestartTimer = setTimeout(async () => {
+    resizeCanvas();
+    if (running && currentStream) {
+      try {
+        await startCamera();
+      } catch (e) {
+        console.error('orientation restart failed', e);
+      }
+    }
+  }, 350);
+}
+window.addEventListener('orientationchange', handleOrientationChange);
+if (window.screen && screen.orientation) {
+  screen.orientation.addEventListener('change', handleOrientationChange);
+}
 </script>
 </body>
 </html>
