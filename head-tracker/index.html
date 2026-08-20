@@ -39,6 +39,18 @@
     width: 100%; height: 100%;
     object-fit: cover;
     display: block;
+    transition: filter .25s ease;
+  }
+
+  video#camBlur {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+    pointer-events: none;
+    mix-blend-mode: lighten;
+    opacity: 0;
+    transition: opacity .25s ease, filter .25s ease;
   }
 
   canvas#overlay {
@@ -113,6 +125,7 @@
 <div id="stage">
   <div id="mirrorWrap">
     <video id="cam" autoplay playsinline muted></video>
+    <video id="camBlur" autoplay playsinline muted></video>
     <canvas id="overlay"></canvas>
   </div>
 
@@ -121,6 +134,7 @@
   <div id="controls">
     <button class="ctrlBtn" id="btnSwitchCam" title="카메라 전환">⟳</button>
     <button class="ctrlBtn" id="btnMirror" title="좌우 반전">⇋</button>
+    <button class="ctrlBtn" id="btnBeauty" title="카메라 보정">✨</button>
     <button class="ctrlBtn" id="btnFullscreen" title="전체화면">⛶</button>
     <span id="faceCount">0명</span>
   </div>
@@ -152,6 +166,7 @@ const PHRASES = [
 ];
 
 const video = document.getElementById('cam');
+const videoBlur = document.getElementById('camBlur');
 const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d');
 const mirrorWrap = document.getElementById('mirrorWrap');
@@ -163,8 +178,16 @@ const controls = document.getElementById('controls');
 const hint = document.getElementById('hint');
 const btnSwitchCam = document.getElementById('btnSwitchCam');
 const btnMirror = document.getElementById('btnMirror');
+const btnBeauty = document.getElementById('btnBeauty');
 const btnFullscreen = document.getElementById('btnFullscreen');
 const faceCountEl = document.getElementById('faceCount');
+
+const BEAUTY_OFF = { camFilter: 'none', blurFilter: 'blur(0px)', blurOpacity: 0 };
+const BEAUTY_ON = {
+  camFilter: 'brightness(1.06) contrast(1.03) saturate(1.08)',
+  blurFilter: 'blur(6px) brightness(1.1)',
+  blurOpacity: .32,
+};
 
 let faceDetector = null;
 let usingGPU = true;
@@ -172,6 +195,7 @@ let devices = [];
 let deviceIndex = 0;
 let currentStream = null;
 let mirrored = false;
+let beautyOn = true;
 let tracked = [];
 let nextId = 1;
 let phraseBag = [];
@@ -237,19 +261,30 @@ async function startCamera(preferFacing) {
   const stream = await navigator.mediaDevices.getUserMedia(constraints);
   currentStream = stream;
   video.srcObject = stream;
+  videoBlur.srcObject = stream;
   await new Promise(res => { video.onloadedmetadata = () => res(); });
   await video.play();
+  videoBlur.play().catch(() => {});
 
   const track = stream.getVideoTracks()[0];
   const settings = track.getSettings ? track.getSettings() : {};
   mirrored = settings.facingMode === 'user';
   applyMirror();
+  applyBeauty();
 
   if (!devices.length) await listDevices();
 }
 
 function applyMirror() {
   mirrorWrap.classList.toggle('mirrored', mirrored);
+}
+
+function applyBeauty() {
+  const lv = beautyOn ? BEAUTY_ON : BEAUTY_OFF;
+  video.style.filter = lv.camFilter;
+  videoBlur.style.filter = lv.blurFilter;
+  videoBlur.style.opacity = lv.blurOpacity;
+  btnBeauty.classList.toggle('active', beautyOn);
 }
 
 function resizeCanvas() {
@@ -431,6 +466,13 @@ btnMirror.addEventListener('click', (e) => {
   mirrored = !mirrored;
   applyMirror();
   btnMirror.classList.toggle('active', mirrored);
+  showControlsBriefly();
+});
+
+btnBeauty.addEventListener('click', (e) => {
+  e.stopPropagation();
+  beautyOn = !beautyOn;
+  applyBeauty();
   showControlsBriefly();
 });
 
